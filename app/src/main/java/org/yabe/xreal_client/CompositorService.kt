@@ -2,7 +2,6 @@ package org.yabe.xreal_client
 
 import android.app.Service
 import android.content.ComponentName
-import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.os.Bundle
@@ -54,7 +53,7 @@ class CompositorService : Service() {
 
         override fun notifyCompositorReady() {
             log("Compositor started")
-            startClientIfNeeded()
+            connectToRunningCompositor()
         }
 
         override fun addClientFd(pfd: ParcelFileDescriptor?) {
@@ -77,20 +76,40 @@ class CompositorService : Service() {
 
         override fun onServiceDisconnected(name: ComponentName?) {
             log("CompositorService disconnected")
-            compositorService = null
-            isBoundToCompositorService = false
+            unbindFromCompositorService()
         }
     }
 
-    private fun bindToCompositorService() {
+    private fun connectToRunningCompositor() {
+        if (compositorService != null) {
+            startClientIfNeeded()
+            return
+        }
+        if (isBoundToCompositorService) {
+            return
+        }
+
         val intent = Intent()
         intent.component = ComponentName("org.yabe.xreal", "org.yabe.xreal.CompositorService")
-        val success = bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+        val success = bindService(intent, serviceConnection, 0)
         isBoundToCompositorService = success
         if (success) {
             log("bindService() succeeded")
         } else {
             log("bindService() failed")
+        }
+    }
+
+    private fun unbindFromCompositorService() {
+        compositorService = null
+        if (!isBoundToCompositorService) {
+            return
+        }
+
+        try {
+            unbindService(serviceConnection)
+        } finally {
+            isBoundToCompositorService = false
         }
     }
 
@@ -258,10 +277,7 @@ class CompositorService : Service() {
     override fun onDestroy() {
         log("CompositorService onDestroy")
         saveAndLogStderr()
-        if (isBoundToCompositorService) {
-            unbindService(serviceConnection)
-            isBoundToCompositorService = false
-        }
+        unbindFromCompositorService()
         executor.shutdownNow()
         super.onDestroy()
     }
