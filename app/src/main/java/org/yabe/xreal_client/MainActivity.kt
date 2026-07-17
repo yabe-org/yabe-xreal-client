@@ -30,7 +30,6 @@ class MainActivity : ComponentActivity(), CompositorService.ILogger {
     private val logViewModel: LogViewModel by viewModels()
 
     override fun appendLog(message: String) {
-        Log.d("YabeXrealClient", message)
         runOnUiThread {
             logViewModel.append(message)
         }

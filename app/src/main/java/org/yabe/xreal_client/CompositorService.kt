@@ -38,40 +38,45 @@ class CompositorService : Service() {
         }
     }
 
+    fun log(message: String) {
+        Log.d("YabeXrealClient", message)
+        listener?.appendLog(message)
+    }
+
     private var compositorService: ICompositorService? = null
     private var isBoundToCompositorService = false
     private var isClientStarted = false
     private val mBinder = object : ICompositorService.Stub() {
         override fun isCompositorReady(): Boolean {
-            return isClientStarted
+            log("Unexpected call from compositor: isCompositorReady()")
+            return false
         }
 
         override fun notifyCompositorReady() {
-            listener?.appendLog("Compositor started")
+            log("Compositor started")
             startClientIfNeeded()
         }
 
         override fun addClientFd(pfd: ParcelFileDescriptor?) {
-            listener?.appendLog("Unexpected call from compositor: addClient()")
+            log("Unexpected call from compositor: addClient()")
         }
     }
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-            listener?.appendLog("CompositorService connected")
+            log("CompositorService connected")
             compositorService = ICompositorService.Stub.asInterface(service)
             try {
                 if (compositorService?.isCompositorReady() == true) {
-                    listener?.appendLog("Compositor is already ready")
+                    log("Compositor is already ready")
                     startClientIfNeeded()
                 }
             } catch (e: Exception) {
-                listener?.appendLog("Failed to check compositor readiness: ${e.message}")
-                Log.e("MainActivity", "Failed to check compositor readiness", e)
+                log("Failed to check compositor readiness: ${e.message}")
             }
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
-            listener?.appendLog("CompositorService disconnected")
+            log("CompositorService disconnected")
             compositorService = null
             isBoundToCompositorService = false
         }
@@ -83,9 +88,9 @@ class CompositorService : Service() {
         val success = bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
         isBoundToCompositorService = success
         if (success) {
-            listener?.appendLog("bindService() succeeded")
+            log("bindService() succeeded")
         } else {
-            listener?.appendLog("bindService() failed")
+            log("bindService() failed")
         }
     }
 
@@ -96,7 +101,7 @@ class CompositorService : Service() {
         if (ChrootNative.is_rootfs_extracted(rootfsPath)) {
             return
         }
-        listener?.appendLog("Rootfs is not extracted, extracting...")
+        log("Rootfs is not extracted, extracting...")
         val imageFileName = "image.tar.zst"
         val imageFile = File(filesDir, imageFileName)
         assets.open(imageFileName).use { inputStream ->
@@ -106,9 +111,9 @@ class CompositorService : Service() {
         }
         val result = ChrootNative.extract_rootfs(imageFile.absolutePath, rootfsPath)
         if (result) {
-            listener?.appendLog("Rootfs extracted successfully")
+            log("Rootfs extracted successfully")
         } else {
-            listener?.appendLog("Failed to extract rootfs")
+            log("Failed to extract rootfs")
         }
     }
 
@@ -120,11 +125,10 @@ class CompositorService : Service() {
         val stderrContent = synchronized(stderrBuilder) {
             stderrBuilder.toString()
         }
-        Log.d("MainActivity", stderrContent)
         try {
             File(filesDir, "stderr.txt").writeText(stderrContent)
         } catch (e: Exception) {
-            Log.e("MainActivity", "Failed to save stderr to file", e)
+            log("Failed to save stderr to file: ${e.message}")
         }
     }
 
@@ -136,12 +140,12 @@ class CompositorService : Service() {
         try {
             File(filesDir, "stderr.txt").writeText("")
         } catch (e: Exception) {
-            Log.e("MainActivity", "Failed to init stderr file", e)
+            log("Failed to init stderr file: ${e.message}")
         }
         ensureRootfsExtracted()
         val fd = createSocketFd("$rootfsPath/tmp")
         if (fd < 0) {
-            listener?.appendLog("Failed to create socket fd")
+            log("Failed to create socket fd")
             return
         }
 
@@ -155,7 +159,7 @@ class CompositorService : Service() {
                 val stdoutBytesRead = stdoutReader.read(buffer)
                 if (stdoutBytesRead > 0) {
                     val stdoutMessage = String(buffer, 0, stdoutBytesRead)
-                    listener?.appendLog("stdout: $stdoutMessage")
+                    log("stdout: $stdoutMessage")
                 } else {
                     break
                 }
@@ -171,20 +175,20 @@ class CompositorService : Service() {
                     synchronized(stderrBuilder) {
                         stderrBuilder.append(stderrMessage)
                     }
-                    Log.d("MainActivity", stderrMessage)
+                    log(stderrMessage)
                     try {
                         File(filesDir, "stderr.txt").appendText(stderrMessage)
                     } catch (e: Exception) {
-                        Log.e("MainActivity", "Failed to append stderr to file", e)
+                        log("Failed to append stderr to file: ${e.message}")
                     }
-                    listener?.appendLog("stderr: $stderrMessage")
+                    log("stderr: $stderrMessage")
                 } else {
                     saveAndLogStderr()
                     break
                 }
             }
         }
-        listener?.appendLog("Chroot starting...")
+        log("Chroot starting...")
         val newPid = ChrootNative.start_chroot_func(
             rootfsPath,
             AndlifyEntrypointRunnable(),
@@ -193,14 +197,14 @@ class CompositorService : Service() {
             stderrFd!![1].fd
         )
         if (newPid > 0) {
-            listener?.appendLog("Chroot started successfully")
+            log("Chroot started successfully")
         }
 
         executor.execute {
             while (true) {
                 val acceptedFd = acceptSocket()
                 if (acceptedFd < 0) {
-                    listener?.appendLog("Failed to accept socket")
+                    log("Failed to accept socket")
                     return@execute
                 }
                 sendClientFd(acceptedFd)
@@ -210,7 +214,7 @@ class CompositorService : Service() {
 
     private fun startClientIfNeeded() {
         if (isClientStarted) {
-            listener?.appendLog("Client is already started")
+            log("Client is already started")
             return
         }
         isClientStarted = true
@@ -221,7 +225,7 @@ class CompositorService : Service() {
         val service = compositorService
         val pfd = ParcelFileDescriptor.fromFd(acceptedFd)
         if (service == null) {
-            listener?.appendLog("CompositorService is not connected; dropping fd: $acceptedFd")
+            log("CompositorService is not connected; dropping fd: $acceptedFd")
             pfd.close()
             return
         }
@@ -229,31 +233,30 @@ class CompositorService : Service() {
             pfd.use {
                 service.addClientFd(it)
             }
-            listener?.appendLog("Sent client fd to compositor: $acceptedFd")
+            log("Sent client fd to compositor: $acceptedFd")
         } catch (e: Exception) {
-            listener?.appendLog("Failed to send client fd to compositor: ${e.message}")
-            Log.e("MainActivity", "Failed to send client fd to compositor", e)
+            log("Failed to send client fd to compositor: ${e.message}")
         }
     }
 
     override fun onCreate() {
         super.onCreate()
-        listener?.appendLog("CompositorService onCreate")
-        bindToCompositorService()
+        log("CompositorService onCreate")
+        connectToRunningCompositor()
     }
 
     override fun onBind(intent: Intent?): IBinder {
-        listener?.appendLog("CompositorService bound by intent: $intent")
+        log("CompositorService bound by intent: $intent")
         return mBinder
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
-        listener?.appendLog("CompositorService unbound")
+        log("CompositorService unbound")
         return super.onUnbind(intent)
     }
 
     override fun onDestroy() {
-        listener?.appendLog("CompositorService onDestroy")
+        log("CompositorService onDestroy")
         saveAndLogStderr()
         if (isBoundToCompositorService) {
             unbindService(serviceConnection)
