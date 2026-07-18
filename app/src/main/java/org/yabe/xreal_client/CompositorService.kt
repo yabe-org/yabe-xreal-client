@@ -141,9 +141,7 @@ class CompositorService : Service() {
     private val stderrBuilder = StringBuilder()
 
     private fun saveAndLogStderr() {
-        val stderrContent = synchronized(stderrBuilder) {
-            stderrBuilder.toString()
-        }
+        val stderrContent = stderrBuilder.toString()
         try {
             File(filesDir, "stderr.txt").writeText(stderrContent)
         } catch (e: Exception) {
@@ -153,9 +151,6 @@ class CompositorService : Service() {
 
 
     private fun startClient() {
-        synchronized(stderrBuilder) {
-            stderrBuilder.clear()
-        }
         try {
             File(filesDir, "stderr.txt").writeText("")
         } catch (e: Exception) {
@@ -178,7 +173,7 @@ class CompositorService : Service() {
                 val stdoutBytesRead = stdoutReader.read(buffer)
                 if (stdoutBytesRead > 0) {
                     val stdoutMessage = String(buffer, 0, stdoutBytesRead)
-                    log("stdout: $stdoutMessage")
+                    log(stdoutMessage)
                 } else {
                     break
                 }
@@ -191,16 +186,7 @@ class CompositorService : Service() {
                 val stderrBytesRead = stderrReader.read(buffer)
                 if (stderrBytesRead > 0) {
                     val stderrMessage = String(buffer, 0, stderrBytesRead)
-                    synchronized(stderrBuilder) {
-                        stderrBuilder.append(stderrMessage)
-                    }
                     log(stderrMessage)
-                    try {
-                        File(filesDir, "stderr.txt").appendText(stderrMessage)
-                    } catch (e: Exception) {
-                        log("Failed to append stderr to file: ${e.message}")
-                    }
-                    log("stderr: $stderrMessage")
                 } else {
                     saveAndLogStderr()
                     break
