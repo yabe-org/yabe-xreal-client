@@ -129,9 +129,8 @@ Java_org_yabe_xreal_1client_AndlifyEntrypointRunnable_andlifyEntrypoint(
       chdir("/tmp");
       setenv("PS1", R"(\u:\w\$ )", 1);
 
-      execl("/usr/bin/weston-clickdot", "weston-clickdot", nullptr);
-      // execl("/usr/bin/weston-terminal", "weston-terminal",
-      //   "--shell=/usr/bin/bash", nullptr);
+      execl("/usr/bin/weston-terminal", "weston-terminal",
+            "--shell=/usr/bin/bash", nullptr);
       std::exit(0);
     } else {
       LOG_DBG("child %d started", child);
