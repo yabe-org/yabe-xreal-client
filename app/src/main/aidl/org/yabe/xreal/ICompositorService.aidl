@@ -5,4 +5,5 @@ interface ICompositorService {
   boolean isCompositorReady();
   void notifyCompositorReady();
   void addClientFd(in ParcelFileDescriptor pfd);
+  String createKeymap(String rules, String model, String layout, String variant, String options);
 }

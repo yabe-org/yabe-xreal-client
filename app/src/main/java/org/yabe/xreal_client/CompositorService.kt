@@ -59,6 +59,26 @@ class CompositorService : Service() {
         override fun addClientFd(pfd: ParcelFileDescriptor?) {
             log("Unexpected call from compositor: addClient()")
         }
+
+        override fun createKeymap(
+            rules: String?,
+            model: String?,
+            layout: String?,
+            variant: String?,
+            options: String?
+        ): String? {
+            if (!ensureRootfsExtracted()) {
+                return null
+            }
+            return createKeymap(
+                "$rootfsPath/usr/share/xkeyboard-config-2",
+                rules,
+                model,
+                layout,
+                variant,
+                options
+            )
+        }
     }
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -116,9 +136,10 @@ class CompositorService : Service() {
     private val rootfsPath: String
         get() = File(filesDir, "rootfs").absolutePath
 
-    private fun ensureRootfsExtracted() {
+    @Synchronized
+    private fun ensureRootfsExtracted(): Boolean {
         if (ChrootNative.is_rootfs_extracted(rootfsPath)) {
-            return
+            return true
         }
         log("Rootfs is not extracted, extracting...")
         val imageFileName = "image.tar.zst"
@@ -134,6 +155,7 @@ class CompositorService : Service() {
         } else {
             log("Failed to extract rootfs")
         }
+        return result
     }
 
     private val executor: ExecutorService = Executors.newCachedThreadPool()
@@ -156,7 +178,9 @@ class CompositorService : Service() {
         } catch (e: Exception) {
             log("Failed to init stderr file: ${e.message}")
         }
-        ensureRootfsExtracted()
+        if (!ensureRootfsExtracted()) {
+            return
+        }
         val fd = createSocketFd("$rootfsPath/tmp")
         if (fd < 0) {
             log("Failed to create socket fd")
@@ -270,4 +294,12 @@ class CompositorService : Service() {
 
     private external fun createSocketFd(socketDir: String): Int
     private external fun acceptSocket(): Int
+    private external fun createKeymap(
+        includeDirectory: String,
+        rules: String?,
+        model: String?,
+        layout: String?,
+        variant: String?,
+        options: String?
+    ): String?
 }

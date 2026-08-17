@@ -12,6 +12,9 @@
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <xkbcommon/xkbcommon.h>
+
+#include <mutex>
 
 #define LOG_INFO(...)                                                          \
   __android_log_print(ANDROID_LOG_INFO, "YabeXrealClient", __VA_ARGS__)
@@ -23,6 +26,20 @@
 namespace {
 int socketFd = -1;
 int epollFd = -1;
+std::mutex xkbMutex;
+
+std::string jstringToString(JNIEnv *env, jstring value) {
+  if (!value) {
+    return {};
+  }
+  const char *chars = env->GetStringUTFChars(value, nullptr);
+  if (!chars) {
+    return {};
+  }
+  std::string result(chars);
+  env->ReleaseStringUTFChars(value, chars);
+  return result;
+}
 } // namespace
 
 extern "C" {
@@ -109,6 +126,54 @@ Java_org_yabe_xreal_1client_CompositorService_acceptSocket(JNIEnv *env,
     return -1;
   }
   return accept(socketFd, nullptr, nullptr);
+}
+
+JNIEXPORT jstring JNICALL
+Java_org_yabe_xreal_1client_CompositorService_createKeymap(
+    JNIEnv *env, jobject obj, jstring includeDir, jstring rules, jstring model,
+    jstring layout, jstring variant, jstring options) {
+  const auto includeDirectory = jstringToString(env, includeDir);
+  const auto rulesString = jstringToString(env, rules);
+  const auto modelString = jstringToString(env, model);
+  const auto layoutString = jstringToString(env, layout);
+  const auto variantString = jstringToString(env, variant);
+  const auto optionsString = jstringToString(env, options);
+  const xkb_rule_names names = {
+      .rules = rulesString.c_str(),
+      .model = modelString.c_str(),
+      .layout = layoutString.c_str(),
+      .variant = variantString.c_str(),
+      .options = optionsString.c_str(),
+  };
+
+  std::lock_guard lock(xkbMutex);
+  auto *context = xkb_context_new(XKB_CONTEXT_NO_DEFAULT_INCLUDES);
+  if (!context) {
+    LOG_ERR("Failed to create xkb context");
+    return nullptr;
+  }
+  if (xkb_context_include_path_append(context, includeDirectory.c_str()) != 1) {
+    LOG_ERR("Failed to add xkb include path: %s", includeDirectory.c_str());
+    xkb_context_unref(context);
+    return nullptr;
+  }
+  auto *keymap = xkb_keymap_new_from_names2(
+      context, &names, XKB_KEYMAP_FORMAT_TEXT_V1, XKB_KEYMAP_COMPILE_NO_FLAGS);
+  xkb_context_unref(context);
+  if (!keymap) {
+    LOG_ERR("Failed to create xkb keymap");
+    return nullptr;
+  }
+  char *keymapString =
+      xkb_keymap_get_as_string(keymap, XKB_KEYMAP_FORMAT_TEXT_V1);
+  xkb_keymap_unref(keymap);
+  if (!keymapString) {
+    LOG_ERR("Failed to serialize xkb keymap");
+    return nullptr;
+  }
+  jstring result = env->NewStringUTF(keymapString);
+  free(keymapString);
+  return result;
 }
 
 JNIEXPORT void JNICALL
