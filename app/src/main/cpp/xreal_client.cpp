@@ -118,7 +118,6 @@ Java_org_yabe_xreal_1client_AndlifyEntrypointRunnable_andlifyEntrypoint(
   setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin", 1);
   setenv("XDG_RUNTIME_DIR", "/tmp", true);
   setenv("WAYLAND_DISPLAY", "wayland-1", true);
-  setenv("WAYLAND_DEBUG", "1", true);
   LOG_DBG("weston-terminal thread start!");
   while (true) {
     int child = fork();
@@ -127,6 +126,7 @@ Java_org_yabe_xreal_1client_AndlifyEntrypointRunnable_andlifyEntrypoint(
     }
     if (child == 0) {
       chdir("/tmp");
+      setenv("PWD", "/tmp", 1);
       setenv("PS1", R"(\u:\w\$ )", 1);
 
       execl("/usr/bin/weston-terminal", "weston-terminal",
