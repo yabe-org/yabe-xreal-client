@@ -7,6 +7,7 @@ import android.content.ServiceConnection
 import android.os.Bundle
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
+import android.system.OsConstants
 import android.util.Log
 import org.yabe.xreal.ICompositorService
 import org.yabe.xreal_client.ui.theme.YabeXREALClientTheme
@@ -21,6 +22,14 @@ class AndlifyEntrypointRunnable : Runnable {
     }
 
     private external fun andlifyEntrypoint()
+}
+
+class AndlifyExecRunnable(private val argv: Array<String>) : Runnable {
+    override fun run() {
+        andlifyExec(argv)
+    }
+
+    private external fun andlifyExec(argv: Array<String>)
 }
 
 
@@ -79,12 +88,34 @@ class CompositorService : Service() {
                 options
             )
         }
+
+        override fun exec(argv: Array<out String>?): Int {
+            if (argv.isNullOrEmpty() || !ensureRootfsExtracted()) {
+                return -1
+            }
+            return ChrootNative.start_chroot_func(
+                rootfsPath,
+                AndlifyExecRunnable(arrayOf(*argv)),
+                OsConstants.STDIN_FILENO,
+                OsConstants.STDOUT_FILENO,
+                OsConstants.STDERR_FILENO
+            )
+        }
+
+        override fun setConfigText(configText: String?) {
+            log("Unexpected call from compositor: setConfigText()")
+        }
     }
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             log("CompositorService connected")
             compositorService = ICompositorService.Stub.asInterface(service)
             try {
+                if (!ensureRootfsExtracted()) {
+                    return
+                }
+                val configText = File(rootfsPath, "etc/yabe/config.lua").readText()
+                compositorService?.setConfigText(configText)
                 if (compositorService?.isCompositorReady() == true) {
                     log("Compositor is already ready")
                     startClientIfNeeded()

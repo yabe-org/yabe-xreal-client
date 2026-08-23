@@ -15,6 +15,7 @@
 #include <xkbcommon/xkbcommon.h>
 
 #include <mutex>
+#include <vector>
 
 #define LOG_INFO(...)                                                          \
   __android_log_print(ANDROID_LOG_INFO, "YabeXrealClient", __VA_ARGS__)
@@ -24,6 +25,8 @@
   __android_log_print(ANDROID_LOG_ERROR, "YabeXrealClient", __VA_ARGS__)
 
 namespace {
+constexpr int COMMAND_CANNOT_EXECUTE_EXIT_STATUS = 126;
+
 int socketFd = -1;
 int epollFd = -1;
 std::mutex xkbMutex;
@@ -210,5 +213,29 @@ Java_org_yabe_xreal_1client_AndlifyEntrypointRunnable_andlifyEntrypoint(
       }
     }
   }
+}
+
+JNIEXPORT void JNICALL
+Java_org_yabe_xreal_1client_AndlifyExecRunnable_andlifyExec(JNIEnv *env,
+                                                            jobject obj,
+                                                            jobjectArray args) {
+  const auto argc = env->GetArrayLength(args);
+  if (argc == 0) {
+    _exit(COMMAND_CANNOT_EXECUTE_EXIT_STATUS);
+  }
+
+  std::vector<std::string> strings;
+  strings.reserve(argc);
+  std::vector<char *> argv;
+  argv.reserve(argc + 1);
+  for (jsize i = 0; i < argc; ++i) {
+    auto *arg = static_cast<jstring>(env->GetObjectArrayElement(args, i));
+    strings.emplace_back(jstringToString(env, arg));
+    argv.push_back(strings.back().data());
+    env->DeleteLocalRef(arg);
+  }
+  argv.push_back(nullptr);
+  execvp(argv[0], argv.data());
+  _exit(COMMAND_CANNOT_EXECUTE_EXIT_STATUS);
 }
 }
