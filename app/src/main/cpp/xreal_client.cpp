@@ -43,6 +43,12 @@ std::string jstringToString(JNIEnv *env, jstring value) {
   env->ReleaseStringUTFChars(value, chars);
   return result;
 }
+
+void initialize_environmen_variables() {
+  setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin", 1);
+  setenv("XDG_RUNTIME_DIR", "/tmp", true);
+  setenv("WAYLAND_DISPLAY", "wayland-1", true);
+}
 } // namespace
 
 extern "C" {
@@ -183,9 +189,7 @@ JNIEXPORT void JNICALL
 Java_org_yabe_xreal_1client_AndlifyEntrypointRunnable_andlifyEntrypoint(
     JNIEnv *env, jobject obj) {
   LOG_DBG("chroot started!");
-  setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin", 1);
-  setenv("XDG_RUNTIME_DIR", "/tmp", true);
-  setenv("WAYLAND_DISPLAY", "wayland-1", true);
+  initialize_environmen_variables();
   LOG_DBG("weston-terminal thread start!");
   while (true) {
     int child = fork();
@@ -223,6 +227,7 @@ Java_org_yabe_xreal_1client_AndlifyExecRunnable_andlifyExec(JNIEnv *env,
   if (argc == 0) {
     _exit(COMMAND_CANNOT_EXECUTE_EXIT_STATUS);
   }
+  initialize_environmen_variables();
 
   std::vector<std::string> strings;
   strings.reserve(argc);
