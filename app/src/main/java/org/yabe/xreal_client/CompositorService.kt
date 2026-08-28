@@ -212,6 +212,10 @@ class CompositorService : Service() {
         if (!ensureRootfsExtracted()) {
             return
         }
+        if (!clearRootfsTmpfsDirectories(rootfsPath)) {
+            log("Failed to clear rootfs tmpfs directories")
+            return
+        }
         val fd = createSocketFd("$rootfsPath/tmp")
         if (fd < 0) {
             log("Failed to create socket fd")
@@ -323,6 +327,7 @@ class CompositorService : Service() {
         super.onDestroy()
     }
 
+    private external fun clearRootfsTmpfsDirectories(rootfsPath: String): Boolean
     private external fun createSocketFd(socketDir: String): Int
     private external fun acceptSocket(): Int
     private external fun createKeymap(

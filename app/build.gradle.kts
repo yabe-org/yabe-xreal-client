@@ -45,7 +45,7 @@ android {
 }
 
 dependencies {
-    implementation("com.github.watasuke102:andlify:dbd96d493d")
+    implementation("com.github.watasuke102:andlify:a2b57e7e31")
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.compose.material3)

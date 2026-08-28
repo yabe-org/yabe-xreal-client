@@ -3,6 +3,7 @@
 #include <cstring>
 #include <errno.h>
 #include <fcntl.h>
+#include <filesystem>
 #include <jni.h>
 #include <string>
 #include <sys/epoll.h>
@@ -52,6 +53,38 @@ void initialize_environmen_variables() {
 } // namespace
 
 extern "C" {
+JNIEXPORT jboolean JNICALL
+Java_org_yabe_xreal_1client_CompositorService_clearRootfsTmpfsDirectories(
+    JNIEnv *env, jobject obj, jstring jRootfsPath) {
+  const auto rootfsPath = jstringToString(env, jRootfsPath);
+  for (const auto *directory : {"run", "tmp"}) {
+    const auto tmpfsDirectory = std::filesystem::path(rootfsPath) / directory;
+    std::error_code error;
+    const auto status = std::filesystem::symlink_status(tmpfsDirectory, error);
+    if (error || !std::filesystem::is_directory(status)) {
+      LOG_ERR("invalid rootfs tmpfs directory `%s`: %s", tmpfsDirectory.c_str(),
+              error ? error.message().c_str() : "not a directory");
+      return JNI_FALSE;
+    }
+
+    std::filesystem::directory_iterator entries(tmpfsDirectory, error);
+    if (error) {
+      LOG_ERR("failed to open rootfs tmpfs directory `%s`: %s",
+              tmpfsDirectory.c_str(), error.message().c_str());
+      return JNI_FALSE;
+    }
+    for (const auto &entry : entries) {
+      std::filesystem::remove_all(entry.path(), error);
+      if (error) {
+        LOG_ERR("failed to remove `%s`: %s", entry.path().c_str(),
+                error.message().c_str());
+        return JNI_FALSE;
+      }
+    }
+  }
+  return JNI_TRUE;
+}
+
 JNIEXPORT jint JNICALL
 Java_org_yabe_xreal_1client_CompositorService_createSocketFd(
     JNIEnv *env, jobject obj, jstring jSocketDir) {
