@@ -9,6 +9,7 @@
 #include <sys/epoll.h>
 #include <sys/file.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/un.h>
 #include <sys/wait.h>
@@ -58,6 +59,9 @@ JNIEXPORT jboolean JNICALL
 Java_org_yabe_xreal_1client_CompositorService_clearRootfsTmpfsDirectories(
     JNIEnv *env, jobject obj, jstring jRootfsPath) {
   const auto rootfsPath = jstringToString(env, jRootfsPath);
+  // /run directory created by `filesystem` package in Arch Linux
+  // may creates it as 0555, so fix it
+  chmod((rootfsPath + "/run").c_str(), 0755);
   for (const auto *directory : {"run", "tmp"}) {
     const auto tmpfsDirectory = std::filesystem::path(rootfsPath) / directory;
     std::error_code error;
@@ -222,8 +226,8 @@ Java_org_yabe_xreal_1client_CompositorService_createKeymap(
 JNIEXPORT void JNICALL
 Java_org_yabe_xreal_1client_AndlifyEntrypointRunnable_andlifyEntrypoint(
     JNIEnv *env, jobject obj) {
+  LOG_DBG("chroot started!");
   initialize_environmen_variables();
-  LOG_DBG("DBus process start!");
   for (const auto &path : {"/run/dbus", "/run/user/0"}) {
     try {
       if (!std::filesystem::create_directories(path)) {
