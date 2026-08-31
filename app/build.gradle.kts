@@ -37,6 +37,10 @@ android {
     androidResources {
         noCompress += listOf("zst")
     }
+    lint {
+        // Andlify requires target SDK 28 or lower because newer Android versions restrict ptrace().
+        disable += "ExpiredTargetSdkVersion"
+    }
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
