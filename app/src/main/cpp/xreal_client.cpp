@@ -49,6 +49,7 @@ void initialize_environmen_variables() {
   setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin", 1);
   setenv("XDG_RUNTIME_DIR", "/tmp", true);
   setenv("WAYLAND_DISPLAY", "wayland-1", true);
+  setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/0/bus", true);
 }
 } // namespace
 
@@ -221,9 +222,17 @@ Java_org_yabe_xreal_1client_CompositorService_createKeymap(
 JNIEXPORT void JNICALL
 Java_org_yabe_xreal_1client_AndlifyEntrypointRunnable_andlifyEntrypoint(
     JNIEnv *env, jobject obj) {
-  LOG_DBG("chroot started!");
   initialize_environmen_variables();
-  LOG_DBG("weston-terminal thread start!");
+  LOG_DBG("DBus process start!");
+  for (const auto &path : {"/run/dbus", "/run/user/0"}) {
+    try {
+      if (!std::filesystem::create_directories(path)) {
+        LOG_ERR("Tried to create existing directory: %s", path);
+      }
+    } catch (const std::filesystem::filesystem_error &e) {
+      LOG_ERR("Failed to create %s: %s", path, e.what());
+    }
+  }
   while (true) {
     int child = fork();
     if (child < 0) {
@@ -234,20 +243,22 @@ Java_org_yabe_xreal_1client_AndlifyEntrypointRunnable_andlifyEntrypoint(
       setenv("PWD", "/tmp", 1);
       setenv("PS1", R"(\u:\w\$ )", 1);
 
-      execl("/usr/bin/weston-terminal", "weston-terminal",
-            "--shell=/usr/bin/bash", nullptr);
+      execl(
+          "/usr/bin/sh", "sh", "-c",
+          "dbus-daemon --system  --fork &&"
+          "dbus-daemon --session --nofork --address=unix:path=/run/user/0/bus",
+          nullptr);
       std::exit(0);
     } else {
       LOG_DBG("child %d started", child);
       int status = 0;
       if (waitpid(child, &status, 0) < 0) {
         LOG_ERR("wait(): %s", std::strerror(errno));
+        continue;
       }
       int exit_status = WEXITSTATUS(status);
-      LOG_INFO("weston-terminal (%d) finished with %d", child, exit_status);
-      if (exit_status != 255) {
-        break;
-      }
+      LOG_INFO("DBus process (%d) finished with %d", child, exit_status);
+      break;
     }
   }
 }
