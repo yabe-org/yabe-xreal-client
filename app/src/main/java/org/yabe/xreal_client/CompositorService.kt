@@ -48,13 +48,17 @@ class CompositorService : Service() {
             return false
         }
 
-        override fun notifyCompositorReady() {
-            log("Compositor started")
-            connectToRunningCompositor()
+        override fun setConfigText(configText: String?) {
+            log("Unexpected call from compositor: setConfigText()")
         }
 
         override fun addClientFd(pfd: ParcelFileDescriptor?) {
             log("Unexpected call from compositor: addClient()")
+        }
+
+        override fun notifyCompositorReady() {
+            log("Compositor started")
+            connectToRunningCompositor()
         }
 
         override fun createKeymap(
@@ -88,10 +92,6 @@ class CompositorService : Service() {
                 OsConstants.STDOUT_FILENO,
                 OsConstants.STDERR_FILENO
             )
-        }
-
-        override fun setConfigText(configText: String?) {
-            log("Unexpected call from compositor: setConfigText()")
         }
     }
     private val serviceConnection = object : ServiceConnection {
