@@ -39,7 +39,8 @@ set_target_properties(xkbcommon PROPERTIES
 add_dependencies(xkbcommon xkbcommon_project)
 
 add_library(${CMAKE_PROJECT_NAME} SHARED
-    xreal_client.cpp)
+    andlify_process.cpp
+    compositor_service.cpp)
 add_dependencies(${CMAKE_PROJECT_NAME} xkbcommon_project)
 
 target_link_libraries(${CMAKE_PROJECT_NAME}

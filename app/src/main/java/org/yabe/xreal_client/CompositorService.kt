@@ -4,57 +4,45 @@ import android.app.Service
 import android.content.ComponentName
 import android.content.Intent
 import android.content.ServiceConnection
-import android.os.Bundle
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
 import android.system.OsConstants
 import android.util.Log
-import org.yabe.xreal.ICompositorService
-import org.yabe.xreal_client.ui.theme.YabeXREALClientTheme
 import com.andlify.library.ChrootNative
 import java.io.File
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-
-class AndlifyEntrypointRunnable : Runnable {
-    override fun run() {
-        andlifyEntrypoint()
-    }
-
-    private external fun andlifyEntrypoint()
-}
-
-class AndlifyExecRunnable(private val argv: Array<String>) : Runnable {
-    override fun run() {
-        andlifyExec(argv)
-    }
-
-    private external fun andlifyExec(argv: Array<String>)
-}
-
+import org.yabe.xreal.ICompositorService
 
 class CompositorService : Service() {
-    interface ILogger {
+    fun interface LogListener {
         fun appendLog(message: String)
     }
 
     companion object {
-        var listener: ILogger? = null
+        private const val TAG = "YabeXrealClient"
+        private const val COMPOSITOR_PACKAGE = "org.yabe.xreal"
+        private const val COMPOSITOR_SERVICE = "$COMPOSITOR_PACKAGE.CompositorService"
+        var listener: LogListener? = null
 
         init {
             System.loadLibrary("xreal_client")
         }
     }
 
-    fun log(message: String) {
-        Log.d("YabeXrealClient", message)
+    private fun log(message: String) {
+        Log.d(TAG, message)
         listener?.appendLog(message)
     }
 
     private var compositorService: ICompositorService? = null
     private var isBoundToCompositorService = false
     private var isClientStarted = false
-    private val mBinder = object : ICompositorService.Stub() {
+    private val executor: ExecutorService = Executors.newCachedThreadPool()
+    private val stderrBuilder = StringBuffer()
+    private val rootfs by lazy { RootfsEnvironment(filesDir, assets, ::log) }
+
+    private val binder = object : ICompositorService.Stub() {
         override fun isCompositorReady(): Boolean {
             log("Unexpected call from compositor: isCompositorReady()")
             return false
@@ -76,25 +64,25 @@ class CompositorService : Service() {
             variant: String?,
             options: String?
         ): String? {
-            if (!ensureRootfsExtracted()) {
+            if (!rootfs.ensureExtracted()) {
                 return null
             }
             return createKeymap(
-                "$rootfsPath/usr/share/xkeyboard-config-2",
-                rules,
-                model,
-                layout,
-                variant,
-                options
+                "${rootfs.path}/usr/share/xkeyboard-config-2",
+                rules.orEmpty(),
+                model.orEmpty(),
+                layout.orEmpty(),
+                variant.orEmpty(),
+                options.orEmpty(),
             )
         }
 
         override fun exec(argv: Array<out String>?): Int {
-            if (argv.isNullOrEmpty() || !ensureRootfsExtracted()) {
+            if (argv.isNullOrEmpty() || !rootfs.ensureExtracted()) {
                 return -1
             }
             return ChrootNative.start_chroot_func(
-                rootfsPath,
+                rootfs.path,
                 AndlifyExecRunnable(arrayOf(*argv)),
                 OsConstants.STDIN_FILENO,
                 OsConstants.STDOUT_FILENO,
@@ -111,12 +99,13 @@ class CompositorService : Service() {
             log("CompositorService connected")
             compositorService = ICompositorService.Stub.asInterface(service)
             try {
-                if (!ensureRootfsExtracted()) {
+                if (!rootfs.ensureExtracted()) {
                     return
                 }
-                val configText = File(rootfsPath, "etc/yabe/config.lua").readText()
-                compositorService?.setConfigText(configText)
-                if (compositorService?.isCompositorReady() == true) {
+                val configText = rootfs.readConfig()
+                val service = compositorService ?: return
+                service.setConfigText(configText)
+                if (service.isCompositorReady) {
                     log("Compositor is already ready")
                     startClientIfNeeded()
                 }
@@ -140,15 +129,12 @@ class CompositorService : Service() {
             return
         }
 
-        val intent = Intent()
-        intent.component = ComponentName("org.yabe.xreal", "org.yabe.xreal.CompositorService")
+        val intent = Intent().setComponent(
+            ComponentName(COMPOSITOR_PACKAGE, COMPOSITOR_SERVICE),
+        )
         val success = bindService(intent, serviceConnection, 0)
         isBoundToCompositorService = success
-        if (success) {
-            log("bindService() succeeded")
-        } else {
-            log("bindService() failed")
-        }
+        log("bindService() ${if (success) "succeeded" else "failed"}")
     }
 
     private fun unbindFromCompositorService() {
@@ -164,105 +150,79 @@ class CompositorService : Service() {
         }
     }
 
-    private val rootfsPath: String
-        get() = File(filesDir, "rootfs").absolutePath
-
-    @Synchronized
-    private fun ensureRootfsExtracted(): Boolean {
-        if (ChrootNative.is_rootfs_extracted(rootfsPath)) {
-            return true
-        }
-        log("Rootfs is not extracted, extracting...")
-        val imageFileName = "image.tar.zst"
-        val imageFile = File(filesDir, imageFileName)
-        assets.open(imageFileName).use { inputStream ->
-            imageFile.outputStream().use { outputStream ->
-                inputStream.copyTo(outputStream)
-            }
-        }
-        val result = ChrootNative.extract_rootfs(imageFile.absolutePath, rootfsPath)
-        if (result) {
-            log("Rootfs extracted successfully")
-        } else {
-            log("Failed to extract rootfs")
-        }
-        return result
-    }
-
-    private val executor: ExecutorService = Executors.newCachedThreadPool()
-    var stderrFd: Array<ParcelFileDescriptor>? = null
-    private val stderrBuilder = StringBuilder()
-
     private fun saveAndLogStderr() {
-        val stderrContent = stderrBuilder.toString()
         try {
-            File(filesDir, "stderr.txt").writeText(stderrContent)
+            File(filesDir, "stderr.txt").writeText(stderrBuilder.toString())
         } catch (e: Exception) {
             log("Failed to save stderr to file: ${e.message}")
         }
     }
 
+    private fun consumeOutput(
+        readDescriptor: ParcelFileDescriptor,
+        captureForReport: Boolean,
+    ) {
+        executor.execute {
+            ParcelFileDescriptor.AutoCloseInputStream(readDescriptor).use { input ->
+                val buffer = ByteArray(1024)
+                while (true) {
+                    val bytesRead = input.read(buffer)
+                    if (bytesRead <= 0) {
+                        break
+                    }
+                    val message = String(buffer, 0, bytesRead)
+                    if (captureForReport) {
+                        stderrBuilder.append(message)
+                    }
+                    log(message)
+                }
+            }
+            if (captureForReport) {
+                saveAndLogStderr()
+            }
+        }
+    }
 
-    private fun startClient() {
+    private fun startClient(): Boolean {
         try {
             File(filesDir, "stderr.txt").writeText("")
         } catch (e: Exception) {
             log("Failed to init stderr file: ${e.message}")
         }
-        if (!ensureRootfsExtracted()) {
-            return
+        if (!rootfs.ensureExtracted()) {
+            return false
         }
-        if (!clearRootfsTmpfsDirectories(rootfsPath)) {
+        if (!clearRootfsTmpfsDirectories(rootfs.path)) {
             log("Failed to clear rootfs tmpfs directories")
-            return
+            return false
         }
-        val fd = createSocketFd("$rootfsPath/tmp")
+        val fd = createSocketFd("${rootfs.path}/tmp")
         if (fd < 0) {
             log("Failed to create socket fd")
-            return
+            return false
         }
 
-        val stdinFd = ParcelFileDescriptor.createPipe()
-        val stdoutFd = ParcelFileDescriptor.createPipe()
-        stderrFd = ParcelFileDescriptor.createPipe()
-        executor.execute {
-            val stdoutReader = ParcelFileDescriptor.AutoCloseInputStream(stdoutFd[0])
-            val buffer = ByteArray(1024)
-            while (true) {
-                val stdoutBytesRead = stdoutReader.read(buffer)
-                if (stdoutBytesRead > 0) {
-                    val stdoutMessage = String(buffer, 0, stdoutBytesRead)
-                    log(stdoutMessage)
-                } else {
-                    break
-                }
-            }
-        }
-        executor.execute {
-            val stderrReader = ParcelFileDescriptor.AutoCloseInputStream(stderrFd!![0])
-            val buffer = ByteArray(1024)
-            while (true) {
-                val stderrBytesRead = stderrReader.read(buffer)
-                if (stderrBytesRead > 0) {
-                    val stderrMessage = String(buffer, 0, stderrBytesRead)
-                    log(stderrMessage)
-                } else {
-                    saveAndLogStderr()
-                    break
-                }
-            }
-        }
+        val stdinPipe = ParcelFileDescriptor.createPipe()
+        val stdoutPipe = ParcelFileDescriptor.createPipe()
+        val stderrPipe = ParcelFileDescriptor.createPipe()
+        consumeOutput(stdoutPipe[0], captureForReport = false)
+        consumeOutput(stderrPipe[0], captureForReport = true)
         log("Chroot starting...")
         val newPid = ChrootNative.start_chroot_func(
-            rootfsPath,
+            rootfs.path,
             AndlifyEntrypointRunnable(),
-            stdinFd[1].fd,
-            stdoutFd[1].fd,
-            stderrFd!![1].fd
+            stdinPipe[0].fd,
+            stdoutPipe[1].fd,
+            stderrPipe[1].fd,
         )
-        if (newPid > 0) {
-            log("Chroot started successfully")
+        stdinPipe.forEach(ParcelFileDescriptor::close)
+        stdoutPipe[1].close()
+        stderrPipe[1].close()
+        if (newPid <= 0) {
+            log("Failed to start chroot: $newPid")
+            return false
         }
+        log("Chroot started successfully")
 
         executor.execute {
             while (true) {
@@ -274,20 +234,21 @@ class CompositorService : Service() {
                 sendClientFd(acceptedFd)
             }
         }
+        return true
     }
 
+    @Synchronized
     private fun startClientIfNeeded() {
         if (isClientStarted) {
             log("Client is already started")
             return
         }
-        isClientStarted = true
-        startClient()
+        isClientStarted = startClient()
     }
 
     private fun sendClientFd(acceptedFd: Int) {
         val service = compositorService
-        val pfd = ParcelFileDescriptor.fromFd(acceptedFd)
+        val pfd = ParcelFileDescriptor.adoptFd(acceptedFd)
         if (service == null) {
             log("CompositorService is not connected; dropping fd: $acceptedFd")
             pfd.close()
@@ -311,7 +272,7 @@ class CompositorService : Service() {
 
     override fun onBind(intent: Intent?): IBinder {
         log("CompositorService bound by intent: $intent")
-        return mBinder
+        return binder
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
@@ -332,10 +293,10 @@ class CompositorService : Service() {
     private external fun acceptSocket(): Int
     private external fun createKeymap(
         includeDirectory: String,
-        rules: String?,
-        model: String?,
-        layout: String?,
-        variant: String?,
-        options: String?
+        rules: String,
+        model: String,
+        layout: String,
+        variant: String,
+        options: String,
     ): String?
 }

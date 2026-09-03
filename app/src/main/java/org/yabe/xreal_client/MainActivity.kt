@@ -1,8 +1,7 @@
 package org.yabe.xreal_client
 
-import android.os.Bundle
-import android.util.Log
 import android.content.Intent
+import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
@@ -26,7 +25,7 @@ class LogViewModel : ViewModel() {
     }
 }
 
-class MainActivity : ComponentActivity(), CompositorService.ILogger {
+class MainActivity : ComponentActivity(), CompositorService.LogListener {
     private val logViewModel: LogViewModel by viewModels()
 
     override fun appendLog(message: String) {
@@ -42,13 +41,9 @@ class MainActivity : ComponentActivity(), CompositorService.ILogger {
         startService(Intent(this, CompositorService::class.java))
         setContent {
             YabeXREALClientTheme {
-                loggerScreen(this.logViewModel)
+                loggerScreen(logViewModel)
             }
         }
-    }
-
-    override fun onStop() {
-        super.onStop()
     }
 
     override fun onDestroy() {
@@ -58,7 +53,7 @@ class MainActivity : ComponentActivity(), CompositorService.ILogger {
 }
 
 @Composable
-fun loggerScreen(viewModel: LogViewModel) {
+private fun loggerScreen(viewModel: LogViewModel) {
     Column(
         modifier = Modifier
             .fillMaxSize()
