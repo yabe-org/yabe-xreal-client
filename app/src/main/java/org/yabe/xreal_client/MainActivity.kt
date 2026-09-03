@@ -37,8 +37,7 @@ class MainActivity : ComponentActivity(), CompositorService.LogListener {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         CompositorService.listener = this
-        appendLog("Activity started")
-        startService(Intent(this, CompositorService::class.java))
+        appendLog("MainActivity started")
         setContent {
             YabeXREALClientTheme {
                 loggerScreen(logViewModel)
