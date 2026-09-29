@@ -201,6 +201,10 @@ class CompositorService : Service() {
             log("Failed to create socket fd")
             return false
         }
+        if (!ChrootNative.set_file_owner(rootfs.path, "/tmp/wayland-1", 1000, 1000, 0b110_000_000)) {
+            log("Failed to assign Wayland socket ownership")
+            return false
+        }
 
         val stdinPipe = ParcelFileDescriptor.createPipe()
         val stdoutPipe = ParcelFileDescriptor.createPipe()
@@ -214,6 +218,8 @@ class CompositorService : Service() {
             stdinPipe[0].fd,
             stdoutPipe[1].fd,
             stderrPipe[1].fd,
+            uid = 0,
+            gid = 0,
         )
         stdinPipe.forEach(ParcelFileDescriptor::close)
         stdoutPipe[1].close()
