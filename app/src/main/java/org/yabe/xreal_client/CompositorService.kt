@@ -41,6 +41,8 @@ class CompositorService : Service() {
     private val executor: ExecutorService = Executors.newCachedThreadPool()
     private val stderrBuilder = StringBuffer()
     private val rootfs by lazy { RootfsEnvironment(filesDir, assets, ::log) }
+    // tracer pids of chroot environments started by this service
+    private val tracerPids = mutableSetOf<Int>()
 
     private val binder = object : ICompositorService.Stub() {
         override fun isCompositorReady(): Boolean {
@@ -85,13 +87,17 @@ class CompositorService : Service() {
             if (argv.isNullOrEmpty() || !rootfs.ensureExtracted()) {
                 return -1
             }
-            return ChrootNative.start_chroot_func(
+            val pid = ChrootNative.start_chroot_func(
                 rootfs.path,
                 AndlifyExecRunnable(arrayOf(*argv)),
                 OsConstants.STDIN_FILENO,
                 OsConstants.STDOUT_FILENO,
                 OsConstants.STDERR_FILENO
             )
+            if (pid > 0) {
+                synchronized(tracerPids) { tracerPids.add(pid) }
+            }
+            return pid
         }
     }
     private val serviceConnection = object : ServiceConnection {
@@ -228,6 +234,7 @@ class CompositorService : Service() {
             log("Failed to start chroot: $newPid")
             return false
         }
+        synchronized(tracerPids) { tracerPids.add(newPid) }
         log("Chroot started successfully")
 
         executor.execute {
@@ -286,8 +293,20 @@ class CompositorService : Service() {
         return super.onUnbind(intent)
     }
 
+    // The process may outlive this service, so the chroot environment must not
+    // survive it; otherwise the next startClient() clears /run under running
+    // daemons, and andlify skips recreating /run/user/1000 while their tracers
+    // still hold the ownership store.
+    private fun stopChroots() {
+        val pids = synchronized(tracerPids) {
+            tracerPids.toList().also { tracerPids.clear() }
+        }
+        pids.forEach(ChrootNative::stop_chroot)
+    }
+
     override fun onDestroy() {
         log("CompositorService onDestroy")
+        stopChroots()
         saveAndLogStderr()
         unbindFromCompositorService()
         executor.shutdownNow()
