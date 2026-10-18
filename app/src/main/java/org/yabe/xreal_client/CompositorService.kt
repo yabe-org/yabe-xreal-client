@@ -4,6 +4,7 @@ import android.app.Service
 import android.content.ComponentName
 import android.content.Intent
 import android.content.ServiceConnection
+import android.os.FileObserver
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
 import android.system.OsConstants
@@ -43,6 +44,7 @@ class CompositorService : Service() {
     private val rootfs by lazy { RootfsEnvironment(filesDir, assets, ::log) }
     // tracer pids of chroot environments started by this service
     private val tracerPids = mutableSetOf<Int>()
+    private var configObserver: FileObserver? = null
 
     private val binder = object : ICompositorService.Stub() {
         override fun isCompositorReady(): Boolean {
@@ -111,6 +113,7 @@ class CompositorService : Service() {
                 val configText = rootfs.readConfig()
                 val service = compositorService ?: return
                 service.setConfigText(configText)
+                startConfigObserverIfNeeded()
                 if (service.isCompositorReady) {
                     log("Compositor is already ready")
                     startClientIfNeeded()
@@ -153,6 +156,48 @@ class CompositorService : Service() {
             unbindService(serviceConnection)
         } finally {
             isBoundToCompositorService = false
+        }
+    }
+
+    @Synchronized
+    private fun startConfigObserverIfNeeded() {
+        if (configObserver != null) {
+            return
+        }
+        val configFile = rootfs.configFile
+        val directory = configFile.parentFile ?: return
+        // FileObserver(File, Int) requires API 29
+        @Suppress("DEPRECATION")
+        val observer = object : FileObserver(
+            directory.absolutePath,
+            CLOSE_WRITE or MOVED_TO,
+        ) {
+            override fun onEvent(event: Int, path: String?) {
+                if (path != configFile.name) {
+                    return;
+                }
+                val service = compositorService
+                if (service == null) {
+                    log("CompositorService is not connected; config change is not sent")
+                    return
+                }
+                try {
+                    service.setConfigText(rootfs.readConfig())
+                    log("Sent updated config text to compositor")
+                } catch (e: Exception) {
+                    log("Failed to send updated config text: ${e.message}")
+                }
+            }
+        }
+        observer.startWatching()
+        configObserver = observer
+        log("Started watching config file: ${configFile.absolutePath}")
+    }
+
+    private fun stopConfigObserver() {
+        synchronized(this) {
+            configObserver?.stopWatching()
+            configObserver = null
         }
     }
 
@@ -306,6 +351,7 @@ class CompositorService : Service() {
 
     override fun onDestroy() {
         log("CompositorService onDestroy")
+        stopConfigObserver()
         stopChroots()
         saveAndLogStderr()
         unbindFromCompositorService()

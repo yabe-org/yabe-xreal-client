@@ -33,5 +33,7 @@ internal class RootfsEnvironment(
         return extracted
     }
 
-    fun readConfig(): String = File(path, "etc/yabe/config.lua").readText()
+    val configFile = File(path, "etc/yabe/config.lua")
+
+    fun readConfig(): String = configFile.readText()
 }
