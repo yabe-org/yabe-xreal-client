@@ -45,6 +45,9 @@ class CompositorService : Service() {
     // tracer pids of chroot environments started by this service
     private val tracerPids = mutableSetOf<Int>()
     private var configObserver: FileObserver? = null
+    // commands requested before DBus is started; guarded by itself
+    private val deferredCommands = mutableListOf<Array<String>>()
+    private var isDbusStartupFinished = false
 
     private val binder = object : ICompositorService.Stub() {
         override fun isCompositorReady(): Boolean {
@@ -61,7 +64,7 @@ class CompositorService : Service() {
         }
 
         override fun notifyCompositorReady() {
-            log("Compositor started")
+            log("Received notification that compositor is started")
             connectToRunningCompositor()
         }
 
@@ -85,21 +88,18 @@ class CompositorService : Service() {
             )
         }
 
+        // returns 0 if the command is deferred until DBus is started
         override fun exec(argv: Array<out String>?): Int {
-            if (argv.isNullOrEmpty() || !rootfs.ensureExtracted()) {
+            if (argv.isNullOrEmpty()) {
                 return -1
             }
-            val pid = ChrootNative.start_chroot_func(
-                rootfs.path,
-                AndlifyExecRunnable(arrayOf(*argv)),
-                OsConstants.STDIN_FILENO,
-                OsConstants.STDOUT_FILENO,
-                OsConstants.STDERR_FILENO
-            )
-            if (pid > 0) {
-                synchronized(tracerPids) { tracerPids.add(pid) }
+            synchronized(deferredCommands) {
+                if (!isDbusStartupFinished) {
+                    deferredCommands.add(arrayOf(*argv))
+                    return 0
+                }
             }
-            return pid
+            return execInRootfs(arrayOf(*argv))
         }
     }
     private val serviceConnection = object : ServiceConnection {
@@ -234,6 +234,44 @@ class CompositorService : Service() {
         }
     }
 
+    private fun execInRootfs(argv: Array<String>): Int {
+        if (!rootfs.ensureExtracted()) {
+            return -1
+        }
+        log("Executing: ${argv.joinToString(" ")}")
+        val pid = ChrootNative.start_chroot_func(
+            rootfs.path,
+            AndlifyExecRunnable(argv),
+            OsConstants.STDIN_FILENO,
+            OsConstants.STDOUT_FILENO,
+            OsConstants.STDERR_FILENO
+        )
+        if (pid > 0) {
+            synchronized(tracerPids) { tracerPids.add(pid) }
+        }
+        return pid
+    }
+
+    // runs deferred commands after DBus startup finishes, even if it fails, so
+    // that configured commands are not lost
+    private fun runDeferredCommandsAfterDbusStartup(readDescriptor: ParcelFileDescriptor) {
+        executor.execute {
+            val status = ParcelFileDescriptor.AutoCloseInputStream(readDescriptor).use {
+                it.read()
+            }
+            if (status == '1'.code) {
+                log("DBus session bus is started")
+            } else {
+                log("Failed to start DBus session bus; deferred commands run without it")
+            }
+            val commands = synchronized(deferredCommands) {
+                isDbusStartupFinished = true
+                deferredCommands.toList().also { deferredCommands.clear() }
+            }
+            commands.forEach(::execInRootfs)
+        }
+    }
+
     private fun startClient(): Boolean {
         try {
             File(filesDir, "stderr.txt").writeText("")
@@ -252,6 +290,7 @@ class CompositorService : Service() {
             log("Failed to create socket fd")
             return false
         }
+        log("Setting file owner...")
         if (!ChrootNative.set_file_owner(rootfs.path, "/tmp/wayland-1", 1000, 1000, 0b110_000_000)) {
             log("Failed to assign Wayland socket ownership")
             return false
@@ -262,10 +301,12 @@ class CompositorService : Service() {
         val stderrPipe = ParcelFileDescriptor.createPipe()
         consumeOutput(stdoutPipe[0], captureForReport = false)
         consumeOutput(stderrPipe[0], captureForReport = true)
+        val dbusReadyPipe = ParcelFileDescriptor.createPipe()
+        runDeferredCommandsAfterDbusStartup(dbusReadyPipe[0])
         log("Chroot starting...")
         val newPid = ChrootNative.start_chroot_func(
             rootfs.path,
-            AndlifyEntrypointRunnable(),
+            AndlifyEntrypointRunnable(dbusReadyPipe[1].fd),
             stdinPipe[0].fd,
             stdoutPipe[1].fd,
             stderrPipe[1].fd,
@@ -275,6 +316,7 @@ class CompositorService : Service() {
         stdinPipe.forEach(ParcelFileDescriptor::close)
         stdoutPipe[1].close()
         stderrPipe[1].close()
+        dbusReadyPipe[1].close()
         if (newPid <= 0) {
             log("Failed to start chroot: $newPid")
             return false
