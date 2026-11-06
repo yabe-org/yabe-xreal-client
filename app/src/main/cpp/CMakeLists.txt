@@ -40,7 +40,9 @@ add_dependencies(xkbcommon xkbcommon_project)
 
 add_library(${CMAKE_PROJECT_NAME} SHARED
     andlify_process.cpp
-    compositor_service.cpp)
+    client_environment.cpp
+    compositor_service.cpp
+    wayland_socket_listener.cpp)
 add_dependencies(${CMAKE_PROJECT_NAME} xkbcommon_project)
 
 target_link_libraries(${CMAKE_PROJECT_NAME}

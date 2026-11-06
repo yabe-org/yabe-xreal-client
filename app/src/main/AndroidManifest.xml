@@ -34,7 +34,7 @@
         android:exported="true"
         android:enabled="true">
         <intent-filter>
-          <action android:name="org.yabe.xreal_client.ICompositorService" />
+          <action android:name="org.yabe.xreal_client.IClientHost" />
         </intent-filter>
       </service>
     </application>
