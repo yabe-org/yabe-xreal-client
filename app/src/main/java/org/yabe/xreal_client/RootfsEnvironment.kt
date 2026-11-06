@@ -15,8 +15,8 @@ internal class RootfsEnvironment(
 
     val path: String = File(filesDirectory, "rootfs").absolutePath
 
-    @Synchronized
-    fun ensureExtracted(): Boolean {
+    // called once before anything accesses the rootfs
+    fun extractIfNeeded(): Boolean {
         if (ChrootNative.is_rootfs_extracted(path)) {
             return true
         }

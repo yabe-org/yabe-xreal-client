@@ -74,9 +74,6 @@ internal class CompositorConnection(
     fun sendConfig(): Boolean {
         val host = compositorHost ?: return false
         try {
-            if (!rootfs.ensureExtracted()) {
-                return false
-            }
             host.setConfigText(rootfs.readConfig())
         } catch (e: Exception) {
             log("Failed to send config text: ${e.message}")

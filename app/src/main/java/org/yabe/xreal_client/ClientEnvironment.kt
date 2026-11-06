@@ -14,8 +14,10 @@ internal class ClientEnvironment(
     private val log: (String) -> Unit,
 ) {
     private val stderrBuilder = StringBuffer()
-    // tracer pids of chroot environments started by this instance
+    // tracer pids of chroot environments started by this instance;
+    // both are guarded by tracerPids
     private val tracerPids = mutableSetOf<Int>()
+    private var isStopped = false
     // commands requested before DBus is started; guarded by itself
     private val deferredCommands = mutableListOf<Array<String>>()
     private var isDbusStartupFinished = false
@@ -30,9 +32,6 @@ internal class ClientEnvironment(
         } catch (e: Exception) {
             log("Failed to init stderr file: ${e.message}")
         }
-        if (!rootfs.ensureExtracted()) {
-            return false
-        }
         if (!clearRootfsTmpfsDirectories(rootfs.path)) {
             log("Failed to clear rootfs tmpfs directories")
             return false
@@ -40,15 +39,17 @@ internal class ClientEnvironment(
         return true
     }
 
-    // starts the init-like entrypoint, which starts DBus
-    fun start(): Boolean {
+    // starts the init-like entrypoint, which starts DBus.
+    // beforeCommands is called in another thread after DBus startup finishes
+    // and before deferred commands run
+    fun start(beforeCommands: () -> Unit): Boolean {
         val stdinPipe = ParcelFileDescriptor.createPipe()
         val stdoutPipe = ParcelFileDescriptor.createPipe()
         val stderrPipe = ParcelFileDescriptor.createPipe()
         consumeOutput(stdoutPipe[0], captureForReport = false)
         consumeOutput(stderrPipe[0], captureForReport = true)
         val dbusReadyPipe = ParcelFileDescriptor.createPipe()
-        runDeferredCommandsAfterDbusStartup(dbusReadyPipe[0])
+        runDeferredCommandsAfterDbusStartup(dbusReadyPipe[0], beforeCommands)
         log("Chroot starting...")
         val newPid = ChrootNative.start_chroot_func(
             rootfs.path,
@@ -67,8 +68,10 @@ internal class ClientEnvironment(
             log("Failed to start chroot: $newPid")
             return false
         }
-        synchronized(tracerPids) { tracerPids.add(newPid) }
-        log("Chroot started successfully")
+        addTracer(newPid)
+        // the tracer initializes the andlify ownership store, which scans the
+        // whole rootfs, before the entrypoint starts DBus
+        log("Chroot started; waiting for rootfs scan and DBus startup...")
         return true
     }
 
@@ -89,10 +92,25 @@ internal class ClientEnvironment(
     // hold the ownership store.
     fun stop() {
         val pids = synchronized(tracerPids) {
+            isStopped = true
             tracerPids.toList().also { tracerPids.clear() }
         }
         pids.forEach(ChrootNative::stop_chroot)
         saveAndLogStderr()
+    }
+
+    // a chroot environment started in another thread after stop() is stopped
+    // immediately
+    private fun addTracer(pid: Int) {
+        val shouldStop = synchronized(tracerPids) {
+            if (!isStopped) {
+                tracerPids.add(pid)
+            }
+            isStopped
+        }
+        if (shouldStop) {
+            ChrootNative.stop_chroot(pid)
+        }
     }
 
     private fun saveAndLogStderr() {
@@ -129,9 +147,6 @@ internal class ClientEnvironment(
     }
 
     private fun execInRootfs(argv: Array<String>): Int {
-        if (!rootfs.ensureExtracted()) {
-            return -1
-        }
         log("Executing: ${argv.joinToString(" ")}")
         val pid = ChrootNative.start_chroot_func(
             rootfs.path,
@@ -141,14 +156,17 @@ internal class ClientEnvironment(
             OsConstants.STDERR_FILENO
         )
         if (pid > 0) {
-            synchronized(tracerPids) { tracerPids.add(pid) }
+            addTracer(pid)
         }
         return pid
     }
 
     // runs deferred commands after DBus startup finishes, even if it fails, so
     // that configured commands are not lost
-    private fun runDeferredCommandsAfterDbusStartup(readDescriptor: ParcelFileDescriptor) {
+    private fun runDeferredCommandsAfterDbusStartup(
+        readDescriptor: ParcelFileDescriptor,
+        beforeCommands: () -> Unit,
+    ) {
         executor.execute {
             val status = ParcelFileDescriptor.AutoCloseInputStream(readDescriptor).use {
                 it.read()
@@ -158,6 +176,7 @@ internal class ClientEnvironment(
             } else {
                 log("Failed to start DBus session bus; deferred commands run without it")
             }
+            beforeCommands()
             val commands = synchronized(deferredCommands) {
                 isDbusStartupFinished = true
                 deferredCommands.toList().also { deferredCommands.clear() }
