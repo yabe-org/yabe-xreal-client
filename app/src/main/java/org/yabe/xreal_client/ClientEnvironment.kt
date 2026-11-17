@@ -4,7 +4,10 @@ import android.os.ParcelFileDescriptor
 import android.system.OsConstants
 import com.andlify.library.ChrootNative
 import java.io.File
+import java.util.concurrent.Callable
 import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 
 // chroot environment in the rootfs where DBus and configured commands run
 internal class ClientEnvironment(
@@ -21,6 +24,10 @@ internal class ClientEnvironment(
     // commands requested before DBus is started; guarded by itself
     private val deferredCommands = mutableListOf<Array<String>>()
     private var isDbusStartupFinished = false
+    // A tracer is killed when the thread that forked it exits
+    // (PR_SET_PDEATHSIG), so every chroot environment is forked from this
+    // thread, which lives until stop(); pooled threads exit when idle
+    private val spawnExecutor = Executors.newSingleThreadExecutor()
 
     private val stderrFile
         get() = File(filesDirectory, "stderr.txt")
@@ -51,15 +58,17 @@ internal class ClientEnvironment(
         val dbusReadyPipe = ParcelFileDescriptor.createPipe()
         runDeferredCommandsAfterDbusStartup(dbusReadyPipe[0], beforeCommands)
         log("Chroot starting...")
-        val newPid = ChrootNative.start_chroot_func(
-            rootfs.path,
-            AndlifyEntrypointRunnable(dbusReadyPipe[1].fd),
-            stdinPipe[0].fd,
-            stdoutPipe[1].fd,
-            stderrPipe[1].fd,
-            uid = 0,
-            gid = 0,
-        )
+        val newPid = spawn {
+            ChrootNative.start_chroot_func(
+                rootfs.path,
+                AndlifyEntrypointRunnable(dbusReadyPipe[1].fd),
+                stdinPipe[0].fd,
+                stdoutPipe[1].fd,
+                stderrPipe[1].fd,
+                uid = 0,
+                gid = 0,
+            )
+        }
         stdinPipe.forEach(ParcelFileDescriptor::close)
         stdoutPipe[1].close()
         stderrPipe[1].close()
@@ -96,8 +105,24 @@ internal class ClientEnvironment(
             tracerPids.toList().also { tracerPids.clear() }
         }
         pids.forEach(ChrootNative::stop_chroot)
+        // tracers forked after the pids are taken are stopped by addTracer()
+        // or killed when the spawn thread exits
+        spawnExecutor.shutdown()
         saveAndLogStderr()
     }
+
+    // runs startChroot on the spawn thread and returns its result, or a
+    // negative value if stop() has already shut the thread down or the caller
+    // is interrupted; a tracer forked after that dies with the spawn thread
+    private fun spawn(startChroot: () -> Int): Int =
+        try {
+            spawnExecutor.submit(Callable(startChroot)).get()
+        } catch (e: RejectedExecutionException) {
+            -1
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            -1
+        }
 
     // a chroot environment started in another thread after stop() is stopped
     // immediately
@@ -148,13 +173,15 @@ internal class ClientEnvironment(
 
     private fun execInRootfs(argv: Array<String>): Int {
         log("Executing: ${argv.joinToString(" ")}")
-        val pid = ChrootNative.start_chroot_func(
-            rootfs.path,
-            AndlifyExecRunnable(argv),
-            OsConstants.STDIN_FILENO,
-            OsConstants.STDOUT_FILENO,
-            OsConstants.STDERR_FILENO
-        )
+        val pid = spawn {
+            ChrootNative.start_chroot_func(
+                rootfs.path,
+                AndlifyExecRunnable(argv),
+                OsConstants.STDIN_FILENO,
+                OsConstants.STDOUT_FILENO,
+                OsConstants.STDERR_FILENO
+            )
+        }
         if (pid > 0) {
             addTracer(pid)
         }
